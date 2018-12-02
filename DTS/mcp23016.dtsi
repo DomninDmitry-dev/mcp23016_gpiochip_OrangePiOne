@@ -1,0 +1,24 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "allwinner,sun8i-h3";
+	
+	fragment@0 {
+		target = <&i2c0>;
+		__overlay__ {
+			#address-cells = <1>;
+            #size-cells = <0>;
+            status = "okay";
+
+            mcp23016@20 {
+                    compatible = "microchip,mcp23016";
+                    reg = <0x20>;
+                    status = "okay";
+            };
+		};
+		__fixups__ {
+			i2c0 = "/fragment@0:target:0";
+		};
+	};
+};
