@@ -1,11 +1,32 @@
 /dts-v1/;
 /plugin/;
 
+//IRQ_TYPE_LEVEL_HIGH	= 0x00000004,
+//IRQ_TYPE_LEVEL_LOW	= 0x00000008,
+
+//GIC_SPI = 0
+//GIC_PPI = 1
+
 / {
 	compatible = "allwinner,sun8i-h3";
 	
 	fragment@0 {
+		target = <&pio>;
+		__overlay__ {
+			gpio_led: led_pins {
+				pins = "PC0";
+				function = "gpio_out";
+			};
+			//gpio_btn: btn_pins {
+			//	pins = "PA0";
+			//	function = "gpio_in";
+			//};
+		};
+	};
+	
+	fragment@1 {
 		target = <&i2c0>;
+		target-path = "/";
 		__overlay__ {
 			#address-cells = <1>;
             #size-cells = <0>;
@@ -13,12 +34,21 @@
 
             mcp23016@20 {
                     compatible = "microchip,mcp23016";
+                    //pinctrl-names = "default";
                     reg = <0x20>;
+                    interrupt-parent = <&pio>;
+                    interrupts = <0 201 8>; // <GIC_SPI 0 IRQ_TYPE_LEVEL_LOW> // PG9
+                    //interrupts = <0 0 8>; // <GIC_SPI 0 IRQ_TYPE_LEVEL_LOW> // PA0
+                    //#interrupt-cells=<3>;
+                    microchip,irq-mirror;
+                    pinctrl-0 = <&gpio_led>;//,<&gpio_btn>;
+					led-gpios = <&pio 0 64 0>;  // PC0
+					//btn-gpios =	<&pio 0 0 0>;  // PA0
                     status = "okay";
             };
 		};
 		__fixups__ {
-			i2c0 = "/fragment@0:target:0";
+			i2c0 = "/fragment@1:target:0";
 		};
 	};
 };
