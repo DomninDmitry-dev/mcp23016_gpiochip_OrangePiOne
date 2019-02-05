@@ -13,9 +13,9 @@
 	fragment@0 {
 		target = <&pio>;
 		__overlay__ {
-			gpio_led: led_pins {
-				pins = "PC0";
-				function = "gpio_out";
+			mcp23016_int: pin_int {
+			pins = "PG9";
+			function = "gpio_in";
 			};
 		};
 	};
@@ -32,10 +32,9 @@
                     compatible = "microchip,mcp23016";
                     pinctrl-names = "default";
                     reg = <0x20>;
+                    pinctrl-0 = <&mcp23016_int>;
                     interrupt-parent = <&pio>;
-                    interrupts = <0 201 4>; // <GIC_SPI 0 IRQ_TYPE_LEVEL_LOW> // PG9
-                    pinctrl-0 = <&gpio_led>;
-					led-gpios = <&pio 0 64 0>;  // PC0
+                    interrupts = <0 201 4>; // PG9
                     status = "okay";
             };
 		};

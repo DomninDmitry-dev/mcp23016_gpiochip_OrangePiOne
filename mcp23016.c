@@ -14,32 +14,6 @@
 #include <linux/spinlock.h>
 
 /*----------------------------------------------------------------------------*/
-/*
-/dts-v1/;
-/plugin/;
-/ {
-	compatible = "allwinner,sun8i-h3";
-
-	fragment@0 {
-		target = <&i2c0>;
-		__overlay__ {
-			#address-cells = <1>;
-            #size-cells = <0>;
-            status = "okay";
-
-            mcp23016@20 {
-                    compatible = "microchip,mcp23016";
-                    reg = <0x20>;
-                    status = "okay";
-            };
-		};
-		__fixups__ {
-			i2c0 = "/fragment@0:target:0";
-		};
-	};
-};
-*/
-/*----------------------------------------------------------------------------*/
 #define GPIO_NUM 16
 #define INPUT 1
 #define OUTPUT 0
@@ -92,8 +66,6 @@
 struct mcp23016 {
 	struct i2c_client *client;
 	struct gpio_chip chip;
-	struct hrtimer hr_timer;
-	struct work_struct work;
 	u16 irq_enable;
 	u16 iodir;
 	u16 ioport;
