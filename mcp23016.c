@@ -5,6 +5,7 @@
 #include <linux/gpio.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
+#include <asm/irq.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
@@ -88,17 +89,20 @@
 #define MS_TO_NS(x) (x * 1E6L)
 
 /*----------------------------------------------------------------------------*/
-//struct workqueue_struct *wq;
 struct mcp23016 {
 	struct i2c_client *client;
 	struct gpio_chip chip;
 	struct hrtimer hr_timer;
 	struct work_struct work;
-	unsigned irq_base;
+	u16 irq_enable;
+	u16 iodir;
+	u16 ioport;
+	unsigned int edge[GPIO_NUM];
+	struct mutex lock;
+	struct mutex irq_lock;
 };
 
-static struct gpio_desc *led;
-static unsigned int irq;
+static char irqName[20] = "I2C: ";
 
 /*----------------------------------------------------------------------------*/
 static inline struct mcp23016 *to_mcp23016(struct gpio_chip *gc)
@@ -106,85 +110,63 @@ static inline struct mcp23016 *to_mcp23016(struct gpio_chip *gc)
 	return container_of(gc, struct mcp23016, chip);
 }
 /*----------------------------------------------------------------------------*/
-/*static void synaptics_ts_work_func(struct work_struct *work)
-{
-	s32 iodirval;
-	struct mcp23016 *mcp = container_of(work, struct mcp23016, work);
-
-	pr_info("MCP23016: -------------------------------------------\n");
-
-	// Вычитываем состояние регистров
-	iodirval = i2c_smbus_read_byte_data(mcp->client, GP0);
-	pr_info("MCP23016: GP0: 0x%x\n", iodirval);
-	iodirval = i2c_smbus_read_byte_data(mcp->client, GP1);
-	pr_info("MCP23016: GP1: 0x%x\n", iodirval);
-	iodirval = i2c_smbus_read_byte_data(mcp->client, OLAT0);
-	pr_info("MCP23016: OLAT0: 0x%x\n", iodirval);
-	iodirval = i2c_smbus_read_byte_data(mcp->client, OLAT1);
-	pr_info("MCP23016: OLAT1: 0x%x\n", iodirval);
-	iodirval = i2c_smbus_read_byte_data(mcp->client, IPOL0);
-	pr_info("MCP23016: IPOL0: 0x%x\n", iodirval);
-	iodirval = i2c_smbus_read_byte_data(mcp->client, IPOL1);
-	pr_info("MCP23016: IPOL1: 0x%x\n", iodirval);
-	iodirval = i2c_smbus_read_byte_data(mcp->client, IODIR0);
-	pr_info("MCP23016: IODIR0: 0x%x\n", iodirval);
-	iodirval = i2c_smbus_read_byte_data(mcp->client, IODIR1);
-	pr_info("MCP23016: IODIR1: 0x%x\n", iodirval);
-	iodirval = i2c_smbus_read_byte_data(mcp->client, INTCAP0);
-	pr_info("MCP23016: INTCAP0: 0x%x\n", iodirval);
-	iodirval = i2c_smbus_read_byte_data(mcp->client, INTCAP1);
-	pr_info("MCP23016: INTCAP1: 0x%x\n", iodirval);
-	iodirval = i2c_smbus_read_byte_data(mcp->client, IOCON0);
-	pr_info("MCP23016: IOCON0: 0x%x\n", iodirval);
-	iodirval = i2c_smbus_read_byte_data(mcp->client, IOCON1);
-	pr_info("MCP23016: IOCON1: 0x%x\n", iodirval);
-}*/
-/*----------------------------------------------------------------------------*/
-/*static enum hrtimer_restart my_hrtimer_callback(struct hrtimer *timer)
-{
-	ktime_t currtime , interval;
-	struct mcp23016 *mcp = container_of(timer, struct mcp23016, hr_timer);
-
-	//pr_info("MCP23016: Timer Handler called.\n");
-
-	currtime  = ktime_get();
-	interval = ktime_set(0, MS_TO_NS(5000));
-	hrtimer_forward(timer, currtime , interval);
-	//pr_info("My_hrtimer_callback called (%ld).\n", jiffies);
-
-	queue_work(wq, &mcp->work);
-
-	return HRTIMER_RESTART;
-}*/
-/*----------------------------------------------------------------------------*/
 // Вызывается когда разрешается прерывание
 void mcp23016_gpio_irq_unmask(struct irq_data *data)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(data);
 	struct mcp23016 *mcp = to_mcp23016(gc);
-	s32 iodirval;
 
-	pr_info("MCP23016: hwirq - %d\n", data->hwirq);
-	pr_info("MCP23016: irq_base - %d\n", mcp->chip.base);
-	//pr_info("MCP23016: client - 0x%x\n", mcp->client);
-	iodirval = i2c_smbus_read_byte_data(mcp->client, INTCAP0);
-	pr_info("MCP23016: INTCAP0: 0x%x\n", iodirval);
-	iodirval = i2c_smbus_read_byte_data(mcp->client, INTCAP1);
-	pr_info("MCP23016: INTCAP1: 0x%x\n", iodirval);
 	pr_info("MCP23016: mcp23016_gpio_irq_unmask\n");
+
+	pr_info("MCP23016: hwirq - %ld\n", data->hwirq);
+	pr_info("MCP23016: irq_base - %d\n", mcp->chip.base);
+	pr_info("MCP23016: irq - %d\n", data->irq);
+
+	mcp->irq_enable |= BIT(data->hwirq);
+	pr_info("MCP23016: irq_enable = 0x%x\n", mcp->irq_enable);
 }
 /*----------------------------------------------------------------------------*/
 // Вызывается когда запрещается прерывание
 void mcp23016_gpio_irq_mask(struct irq_data *data)
 {
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(data);
+	struct mcp23016 *mcp = to_mcp23016(gc);
+
 	pr_info("MCP23016: mcp23016_gpio_irq_mask\n");
+
+	mcp->irq_enable &= ~BIT(data->hwirq);
+	mcp->edge[data->hwirq] = 0;
+
+	pr_info("MCP23016: irq_enable = 0x%x\n", mcp->irq_enable);
 }
 /*----------------------------------------------------------------------------*/
-// Вызывается когда вводится тип прерывания - rising, falling, both
+// Вызывается когда вводится тип прерывания:
+// rising - 1
+// falling - 2
+// both - 3
 int	mcp23016_gpio_irq_set_type(struct irq_data *data, unsigned int flow_type)
 {
-	pr_info("MCP23016: flow_type - %d\n", flow_type);
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(data);
+	struct mcp23016 *mcp = to_mcp23016(gc);
+	pr_info("MCP23016: mcp23016_gpio_irq_set_type, flow_type - 0x%x\n", flow_type);
+	mcp->edge[data->hwirq] = flow_type;
 	return 0; // Присвоение типа прерывания удачно
+}
+/*----------------------------------------------------------------------------*/
+static void mcp23016_irq_bus_lock(struct irq_data *data)
+{
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(data);
+	struct mcp23016 *mcp = to_mcp23016(gc);
+	pr_info("MCP23016: mcp23016_irq_bus_lock\n");
+	mutex_lock(&mcp->irq_lock);
+}
+/*----------------------------------------------------------------------------*/
+static void mcp23016_irq_bus_unlock(struct irq_data *data)
+{
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(data);
+	struct mcp23016 *mcp = to_mcp23016(gc);
+	pr_info("MCP23016: mcp23016_irq_bus_unlock\n");
+	mutex_unlock(&mcp->irq_lock);
 }
 /*----------------------------------------------------------------------------*/
 static struct irq_chip mcp23016_irq_chip = {
@@ -192,36 +174,49 @@ static struct irq_chip mcp23016_irq_chip = {
 	.irq_mask = mcp23016_gpio_irq_mask,
 	.irq_unmask = mcp23016_gpio_irq_unmask,
 	.irq_set_type = mcp23016_gpio_irq_set_type,
+	.irq_bus_lock = mcp23016_irq_bus_lock,
+	.irq_bus_sync_unlock = mcp23016_irq_bus_unlock,
 };
 /*----------------------------------------------------------------------------*/
 static irqreturn_t mcp23016_irq(int irq, void *data)
 {
-	//struct mcp23016 *mcp = data;
-	//unsigned int child_irq, i;
-	//s32 iodirval;
+	struct mcp23016 *mcp = data;
+	unsigned int child_irq;
+	unsigned long gpio;
+	s32 iodirval;
+	u16 irqMask;
 
-	//pr_info("MCP23016: client - 0x%x\n", mcp->client);
-	//iodirval = i2c_smbus_read_byte_data(mcp->client, INTCAP0);
-	//pr_info("MCP23016: INTCAP0: 0x%x\n", iodirval);
-	//iodirval = i2c_smbus_read_byte_data(mcp->client, INTCAP1);
-	//pr_info("MCP23016: INTCAP1: 0x%x\n", iodirval);
+	pr_info("MCP23016: ************************************************\n");
 
+	mutex_lock(&mcp->lock);
+	iodirval = i2c_smbus_read_byte_data(mcp->client, INTCAP0);
+	irqMask = (u16)iodirval;
+	pr_info("MCP23016: INTCAP0: 0x%x\n", iodirval);
+	iodirval = i2c_smbus_read_byte_data(mcp->client, INTCAP1);
+	irqMask |= (u16)iodirval << 8;
+	pr_info("MCP23016: INTCAP1: 0x%x\n", iodirval);
+	pr_info("MCP23016: irqMask: 0x%x\n", irqMask);
+	pr_info("MCP23016: irq_enable: 0x%x\n", mcp->irq_enable);
+	mutex_unlock(&mcp->lock);
 
-
-	/*for (i = 0; i < mcp->chip.ngpio; i++) {
-		if (gpio_value_changed_and_raised_irq(i)) {
-			child_irq = irq_find_mapping(mcp->chip.irqdomain, i);
-			handle_nested_irq(child_irq);
+	// Перебираем активные прерывания
+	for(gpio=0; gpio<mcp->chip.ngpio; gpio++)
+	{
+		if(mcp->irq_enable & BIT(gpio))
+		{
+			//  Проверяем тип прерывания: rising, falling, both
+			if( (mcp->edge[gpio] == IRQ_TYPE_EDGE_BOTH) ||
+				( (mcp->edge[gpio] == IRQ_TYPE_EDGE_RISING) && (irqMask & BIT(gpio)) ) ||
+				( (mcp->edge[gpio] == IRQ_TYPE_EDGE_FALLING) && (!(irqMask & BIT(gpio))) )
+			) {
+				child_irq = irq_find_mapping(mcp->chip.irqdomain, gpio);
+				pr_info("MCP23016: irq_find_mapping: gpio = %ld, child_irq = %d\n", gpio, child_irq);
+				handle_nested_irq(child_irq);
+			}
 		}
-	}*/
+	}
 
-	return IRQ_HANDLED;
-}
-/*----------------------------------------------------------------------------*/
-static int mcp23016_to_irq(struct gpio_chip *chip, unsigned offset)
-{
-	pr_info("MCP23016: mcp23016_to_irq, offset - %d\n", offset);
-	return irq_create_mapping(chip->irqdomain, offset);
+	return (irqreturn_t)IRQ_HANDLED;
 }
 /*----------------------------------------------------------------------------*/
 static int mcp23016_get_value(struct gpio_chip *gc, unsigned offset)
@@ -252,6 +247,8 @@ static int mcp23016_set(struct mcp23016 *mcp, unsigned offset, int val)
 		else
 			value &= ~(1 << bit);
 
+		mcp->ioport = value;
+
 		return i2c_smbus_write_byte_data(mcp->client, reg_gpio, value);
 	}
 
@@ -261,7 +258,10 @@ static int mcp23016_set(struct mcp23016 *mcp, unsigned offset, int val)
 static void mcp23016_set_value(struct gpio_chip *gc, unsigned offset, int val)
 {
 	struct mcp23016 *mcp = to_mcp23016(gc);
+
+	mutex_lock(&mcp->lock);
 	mcp23016_set(mcp, offset, val);
+	mutex_unlock(&mcp->lock);
 }
 /*----------------------------------------------------------------------------*/
 /*
@@ -284,6 +284,8 @@ static int mcp23016_direction(struct gpio_chip *gc, unsigned offset,
 	else
 		iodirval &= ~(1 << bit);
 
+	mcp->iodir = iodirval;
+
 	i2c_smbus_write_byte_data(mcp->client, reg_iodir, iodirval);
 
 	if (direction)
@@ -295,107 +297,134 @@ static int mcp23016_direction(struct gpio_chip *gc, unsigned offset,
 static int mcp23016_direction_output(struct gpio_chip *gc,
                                     unsigned offset, int val)
 {
+	int res;
+	struct mcp23016 *mcp = to_mcp23016(gc);
+
 	pr_info("MCP23016: Direction output\n");
-	return mcp23016_direction(gc, offset, OUTPUT, val);
+	mutex_lock(&mcp->lock);
+	res = mcp23016_direction(gc, offset, OUTPUT, val);
+	mutex_unlock(&mcp->lock);
+	return res;
 }
 /*----------------------------------------------------------------------------*/
 static int mcp23016_direction_input(struct gpio_chip *gc,
                                     unsigned offset)
 {
+	int res;
+	struct mcp23016 *mcp = to_mcp23016(gc);
+
 	pr_info("MCP23016: Direction input\n");
-	return mcp23016_direction(gc, offset, INPUT, 0);
+	mutex_lock(&mcp->lock);
+	res = mcp23016_direction(gc, offset, INPUT, 0);
+	mutex_unlock(&mcp->lock);
+	return res;
 }
 /*----------------------------------------------------------------------------*/
-static const struct of_device_id mcp23016_ids[] = {
-	{ .compatible = "microchip,mcp23016", },
-	{ /* sentinel */ }
-};
-/*----------------------------------------------------------------------------*/
-static int mcp23016_irq_domain_map(struct irq_domain *domain, unsigned int virq, irq_hw_number_t hw)
+#ifdef CONFIG_DEBUG_FS
+#include <linux/seq_file.h>
+static void mcp23016_dbg_show(struct seq_file *s, struct gpio_chip *gc)
 {
-	irq_set_chip_and_handler(virq,
-							&mcp23016_irq_chip,
-							handle_level_irq); /* Level trigerred irq */
-	return 0;
+	struct mcp23016 *mcp = to_mcp23016(gc);
+	int		t;
+	unsigned	mask;
+
+	for (t = 0, mask = 1; t < mcp->chip.ngpio; t++, mask <<= 1) {
+		const char	*label;
+
+		label = gpiochip_is_requested(&mcp->chip, t);
+		if (!label)
+			continue;
+
+		seq_printf(s, " gpio-%-3d (%d) (%-12s) %s %s",
+			mcp->chip.base + t, t, label,
+			(mcp->iodir & mask) ? "in " : "out",
+			(mcp->ioport & mask) ? "hi" : "lo");
+		/* NOTE:  ignoring the irq-related registers */
+		seq_puts(s, "\n");
+	}
 }
-/*----------------------------------------------------------------------------*/
-static struct irq_domain_ops mcp23016_irq_domain_ops = {
-		.map = mcp23016_irq_domain_map,
-		.xlate = irq_domain_xlate_onetwocell,
-};
+#else
+#define mcp23s08_dbg_show	NULL
+#endif
 /*----------------------------------------------------------------------------*/
 static int mcp23016_probe(struct i2c_client *client,
                         const struct i2c_device_id *id)
 {
 	struct mcp23016 *mcp;
-	struct device *dev = &client->dev;
 	int retval;
-	struct platform_device *pdev = to_platform_device(dev);
+	//struct platform_device *pdev = to_platform_device(dev);
 	//struct st_i2c_dev *i2c_dev = platform_get_drvdata(pdev);
-	//ktime_t ktime;
 
 	pr_info("MCP23016: Starting module\n");
 
 	if (!i2c_check_functionality(client->adapter,
-			I2C_FUNC_SMBUS_BYTE_DATA))
+			I2C_FUNC_SMBUS_BYTE_DATA)) {
+		pr_err("MCP23016: Error i2c <i2c_check_functionality> \n");
 		return -EIO;
+	}
 
 	mcp = devm_kzalloc(&client->dev, sizeof(*mcp), GFP_KERNEL);
-	if (!mcp)
+	if (!mcp) {
+		pr_err("MCP23016: Error mem <devm_kzalloc> \n");
 		return -ENOMEM;
-
-	led = gpiod_get(dev, "led", GPIOD_OUT_HIGH);
-	retval = gpiod_direction_output(led, 0);
-	if(retval)
-	{
-		pr_err("MCP23016 Error led <gpiod_direction_output> \n");
-		return -1;
 	}
+
+	mutex_init(&mcp->lock);
 
 	mcp->chip.label = client->name;
 	mcp->chip.base = -1;
 	mcp->chip.parent = &client->dev;
 	mcp->chip.owner = THIS_MODULE;
 	mcp->chip.ngpio = GPIO_NUM;
-	mcp->chip.can_sleep = 1;
+	mcp->chip.can_sleep = true;
 	mcp->chip.get = mcp23016_get_value;
 	mcp->chip.set = mcp23016_set_value;
 	mcp->chip.direction_output = mcp23016_direction_output;
 	mcp->chip.direction_input = mcp23016_direction_input;
-	mcp->chip.to_irq = mcp23016_to_irq;
-	mcp->chip.irqdomain = irq_domain_add_linear(client->dev.of_node,
-												mcp->chip.ngpio,
-												&mcp23016_irq_domain_ops,
-												mcp);
+	if (IS_ENABLED(CONFIG_DEBUG_FS)) {
+		mcp->chip.dbg_show = mcp23016_dbg_show;
+		pr_info("MCP23016: Activate mcp23016_dbg_show \n");
+	}
+
+	mutex_init(&mcp->irq_lock);
+
 	mcp->client = client;
-	//pr_info("MCP23016: client - 0x%x\n", client);
 
-	//INIT_WORK(&mcp->work, synaptics_ts_work_func);
-	//wq = create_singlethread_workqueue("cmp23016_wq");
-	//if(!wq) return -EBADRQC;
-
-	client->irq = platform_get_irq(pdev, 0);
-
-	i2c_set_clientdata(client, mcp);
+	//client->irq = platform_get_irq(pdev, 0);
 
 	/* Do we have an interrupt line? Enable the irqchip */
 	if (client->irq) {
-		retval = gpiochip_irqchip_add(&mcp->chip,
-										&mcp23016_irq_chip,
-										0, handle_level_irq, IRQ_TYPE_NONE);
-		if (retval) {
-			dev_err(&client->dev, "cannot add irqchip\n");
-			goto fail_irq;
-		}
+		strcat(irqName, dev_name(&client->dev));
+
+		pr_info("MCP23016: fucn - devm_request_threaded_irq\n");
 		retval = devm_request_threaded_irq(&client->dev, client->irq, NULL,
-											mcp23016_irq, IRQF_ONESHOT | IRQF_TRIGGER_FALLING | IRQF_SHARED,
-											dev_name(&client->dev), mcp);
+												mcp23016_irq,
+												IRQF_ONESHOT |
+												IRQF_TRIGGER_FALLING |
+												IRQF_SHARED,
+												irqName, mcp);
 		if (retval) {
-			goto fail_irq;
+			pr_err("MCP23016: Error irq <devm_request_threaded_irq>, unable to request IRQ#%d: %d\n", client->irq, retval);
+			goto fail;
 		}
-		gpiochip_set_chained_irqchip(&mcp->chip,
+
+		pr_info("MCP23016: fucn - gpiochip_irqchip_add\n");
+		// gpiochip_irqchip_add
+		// gpiochip_irqchip_add_nested
+		retval = gpiochip_irqchip_add_nested(&mcp->chip,
+											&mcp23016_irq_chip,
+											0, handle_level_irq, IRQ_TYPE_NONE);
+		if (retval) {
+			pr_err("cannot add irqchip\n");
+			goto fail;
+		}
+
+		pr_info("MCP23016: fucn - gpiochip_set_chained_irqchip\n");
+		//gpiochip_set_chained_irqchip
+		//gpiochip_set_nested_irqchip
+		gpiochip_set_nested_irqchip(&mcp->chip,
 									&mcp23016_irq_chip,
-									client->irq, NULL);
+									client->irq);
 
 		pr_info("MCP23016: irq - %d\n", client->irq);
 	}
@@ -415,44 +444,41 @@ static int mcp23016_probe(struct i2c_client *client,
 	i2c_smbus_write_byte_data(mcp->client, GP0, 0x00);
 	i2c_smbus_write_byte_data(mcp->client, GP1, 0x00);
 
-	/*pr_info("MCP23016: HR Timer module installing\n");
-	ktime = ktime_set(0, MS_TO_NS(5000));
-	hrtimer_init(&mcp->hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	mcp->hr_timer.function = &my_hrtimer_callback;
-	pr_info("MCP23016: Starting timer to fire in %dms (%lu)\n", 1000, jiffies);
-	hrtimer_start(&mcp->hr_timer, ktime, HRTIMER_MODE_REL);*/
+	retval = gpiochip_add(&mcp->chip);
+	if(retval)
+		goto fail;
 
-	return gpiochip_add(&mcp->chip);
-fail_irq:
+	i2c_set_clientdata(client, mcp);
+	return 0;
+
+fail:
+	pr_err("MCP23016: Can't setup chip\n");
 	return -1;
 }
 /*----------------------------------------------------------------------------*/
 static int mcp23016_remove(struct i2c_client *client)
 {
-	struct mcp23016 *mcp;
-	int ret;
-	mcp = i2c_get_clientdata(client);
+	struct mcp23016 *mcp = i2c_get_clientdata(client);
+
+	mutex_lock(&mcp->lock);
+	i2c_smbus_write_byte_data(client, IODIR0, 0x00);
+	i2c_smbus_write_byte_data(client, IODIR1, 0x00);
+	i2c_smbus_write_byte_data(client, GP0, 0x00);
+	i2c_smbus_write_byte_data(client, GP1, 0x00);
+	mutex_unlock(&mcp->lock);
+
 	gpiochip_remove(&mcp->chip);
-	gpiod_put(led);
-	synchronize_irq(irq);
-	free_irq(irq, NULL);
-
-	i2c_smbus_write_byte_data(mcp->client, IODIR0, 0x00);
-	i2c_smbus_write_byte_data(mcp->client, IODIR1, 0x00);
-	i2c_smbus_write_byte_data(mcp->client, GP0, 0x00);
-	i2c_smbus_write_byte_data(mcp->client, GP1, 0x00);
-
-	ret = hrtimer_cancel(&mcp->hr_timer);
-	if(ret) pr_info("The timer was still in use...\n");
-
-	/*if(wq) {
-		flush_workqueue(wq);
-		destroy_workqueue(wq);
-	}*/
+	synchronize_irq(client->irq);
 
 	pr_info("MCP23016: Removing module\n");
 	return 0;
 }
+/*----------------------------------------------------------------------------*/
+static const struct of_device_id mcp23016_ids[] = {
+	{ .compatible = "microchip,mcp23016", },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(of, mcp23016_ids);
 /*----------------------------------------------------------------------------*/
 static const struct i2c_device_id mcp23016_id[] = {
 	{"mcp23016", 0},
@@ -475,4 +501,4 @@ static struct i2c_driver mcp23016_i2c_driver = {
 module_i2c_driver(mcp23016_i2c_driver);
 /*----------------------------------------------------------------------------*/
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Dmitry");
+MODULE_AUTHOR("Dmitry Domnin");

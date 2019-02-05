@@ -8,9 +8,11 @@
 *.cache.mk
 *.cproject
 *.project
+*.dwo
+*.sh
 test
-/DTS/*
-!/DTS/mcp23016.dtsi
+/DTS-OrangePiOne/*
+!/DTS-OrangePiOne/mcp23016.dtsi
 /.tmp_versions
 /arch-include
 /include

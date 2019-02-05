@@ -17,10 +17,6 @@
 				pins = "PC0";
 				function = "gpio_out";
 			};
-			//gpio_btn: btn_pins {
-			//	pins = "PA0";
-			//	function = "gpio_in";
-			//};
 		};
 	};
 	
@@ -34,16 +30,12 @@
 
             mcp23016@20 {
                     compatible = "microchip,mcp23016";
-                    //pinctrl-names = "default";
+                    pinctrl-names = "default";
                     reg = <0x20>;
                     interrupt-parent = <&pio>;
-                    interrupts = <0 201 8>; // <GIC_SPI 0 IRQ_TYPE_LEVEL_LOW> // PG9
-                    //interrupts = <0 0 8>; // <GIC_SPI 0 IRQ_TYPE_LEVEL_LOW> // PA0
-                    //#interrupt-cells=<3>;
-                    microchip,irq-mirror;
-                    pinctrl-0 = <&gpio_led>;//,<&gpio_btn>;
+                    interrupts = <0 201 4>; // <GIC_SPI 0 IRQ_TYPE_LEVEL_LOW> // PG9
+                    pinctrl-0 = <&gpio_led>;
 					led-gpios = <&pio 0 64 0>;  // PC0
-					//btn-gpios =	<&pio 0 0 0>;  // PA0
                     status = "okay";
             };
 		};

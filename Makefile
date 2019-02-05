@@ -2,8 +2,8 @@ KDIR = $(HOME)/CreateImageOP/cache/sources/linux-mainline/linux-4.14.y
 //KDIR = /lib/modules/$(shell uname -r)/build
 ARCH = arm
 CCFLAGS = -C
-//COMPILER = arm-linux-gnueabihf-
 COMPILER = arm-unknown-linux-gnueabihf-
+//COMPILER = arm-linux-gnueabihf-
 PWD = $(shell pwd)
 TARGET_MOD = mcp23016
 TARGET_PROG = test
@@ -20,6 +20,7 @@ REMFLAGS = -g -O0
 # будет не возможна. При включении опции -g, рекомендуется включать и -O0.
 
 obj-m   := $(TARGET_MOD).o 
+CFLAGS_$(TARGET_MOD).o := -DDEBUG
 
 all: prog dtsi
 	$(MAKE) $(CCFLAGS) $(KDIR) M=$(PWD) ARCH=$(ARCH) CROSS_COMPILE=$(COMPILER) modules
@@ -28,11 +29,11 @@ prog: $(TARGET_PROG).cpp
 	arm-unknown-linux-gnueabihf-g++ $(TARGET_PROG).cpp -o $(TARGET_PROG) $(REMFLAGS)
 	
 dtsi:
-	~/Kernels/linux-4.14.y/scripts/dtc/dtc -I dts -O dtb -o ~/eclipse-workspace-drivers-OPI/driver-mcp23016/DTS/mcp23016.dtbo \
-															 ~/eclipse-workspace-drivers-OPI/driver-mcp23016/DTS/mcp23016.dtsi
-
+	~/Kernels/linux-4.14.91/scripts/dtc/dtc -I dts -O dtb -o ~/eclipse-workspace-drivers-OPI/driver-mcp23016/DTS-OrangePiOne/mcp23016.dtbo \
+															 ~/eclipse-workspace-drivers-OPI/driver-mcp23016/DTS-OrangePiOne/mcp23016.dtsi
+															 
 clean: 
-	@rm -f *.o .*.cmd .*.flags *.mod.c *.order 
+	@rm -f *.o .*.cmd .*.flags *.mod.c *.order *.dwo *.mod.dwo .*.dwo
 	@rm -f .*.*.cmd *~ *.*~ TODO.*
 	@rm -fR .tmp* 
 	@rm -rf .tmp_versions
